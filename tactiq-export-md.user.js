@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tactiq → Markdown one-click export
 // @namespace    https://github.com/colby-makowsky/tactiq-md-export
-// @version      1.0.0
+// @version      1.0.1
 // @description  Adds a download icon to every meeting row on Tactiq (Search + My Meetings) that exports the transcript as a clean .md file named "YYYY-MM-DD - <title>.md".
 // @author       Colby Makowsky
 // @match        https://app.tactiq.io/*
@@ -354,6 +354,13 @@
       const meetingId = findMeetingId(archiveBtn);
       if (!meetingId) return;
       group.appendChild(makeButton(archiveBtn, meetingId));
+    });
+    // Keep our icon last in its group. When a row is checkbox-selected, Tactiq
+    // re-mounts that row's action icons and can shove our (non-React) button to
+    // the front — re-append it so the icon order stays consistent everywhere.
+    document.querySelectorAll('.tq-md-export').forEach((btn) => {
+      const g = btn.parentElement;
+      if (g && g.lastElementChild !== btn) g.appendChild(btn);
     });
     injectBulk();
   }
