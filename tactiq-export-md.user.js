@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tactiq → Markdown one-click export
 // @namespace    https://github.com/colby-makowsky/tactiq-md-export
-// @version      1.1.0
+// @version      1.1.1
 // @description  Adds a download icon to every meeting row on Tactiq (Search + My Meetings) that exports the transcript as a clean .md file named "YYYY-MM-DD - <title>.md".
 // @author       Colby Makowsky
 // @match        https://app.tactiq.io/*
@@ -155,16 +155,22 @@
   // regardless of the reader's "strict line breaks" setting.
   const BR = '  ';
 
-  // Emit a YAML scalar, quoting ONLY when the bare value would be mis-parsed —
-  // a leading indicator char, an embedded ": ", or a number/bool/null lookalike.
-  // Plain names (incl. accented/Unicode) stay unquoted.
+  // Emit a YAML scalar, quoting ONLY when a bare value would actually be
+  // mis-parsed. This is a denylist (not an allowlist) so ordinary punctuation —
+  // curly quotes, parentheses, accents, mid-string quotes — stays unquoted; we
+  // only wrap leading indicator chars, ": "/trailing ":", " #", and bool/number
+  // lookalikes.
   function yaml(s) {
     const v = String(s);
-    const safe =
-      /^[\p{L}\p{N}][\p{L}\p{N} .'\-]*$/u.test(v) &&
-      !/^(true|false|null|yes|no|on|off|y|n|~)$/i.test(v) &&
-      !/^[+-]?(\d|\.\d)/.test(v);
-    return safe ? v : `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    const needsQuote =
+      v === '' ||
+      /^\s|\s$/.test(v) ||                                    // leading/trailing whitespace
+      /^[-?:,[\]{}#&*!|>'"%@`]/.test(v) ||                    // leading YAML indicator
+      /:(\s|$)/.test(v) ||                                    // ": " or trailing ":" (looks like a mapping)
+      /\s#/.test(v) ||                                        // " #" (looks like a comment)
+      /^(true|false|null|yes|no|on|off|~)$/i.test(v) ||       // bool / null lookalike
+      /^[+-]?(\d[\d,_]*\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(v); // number lookalike
+    return needsQuote ? `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : v;
   }
 
   function buildMarkdown(meeting) {
