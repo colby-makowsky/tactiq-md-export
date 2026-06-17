@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tactiq → Markdown one-click export
 // @namespace    https://github.com/colby-makowsky/tactiq-md-export
-// @version      1.0.1
+// @version      1.1.0
 // @description  Adds a download icon to every meeting row on Tactiq (Search + My Meetings) that exports the transcript as a clean .md file named "YYYY-MM-DD - <title>.md".
 // @author       Colby Makowsky
 // @match        https://app.tactiq.io/*
@@ -94,6 +94,18 @@
       year: 'numeric', hour: 'numeric', minute: '2-digit',
     });
   }
+  // ISO 8601 wall-clock + explicit offset, e.g. "2026-03-12T14:03-05:00".
+  // Tactiq's tzOffset is JS-style (minutes/ms *behind* UTC), so the printed
+  // offset is its negation. Unambiguous and sortable; date = slice(0, 10).
+  function isoStart(ms, tzOffset) {
+    const p = (n) => String(n).padStart(2, '0');
+    const d = wallDate(ms, tzOffset);
+    const day = `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
+    const time = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+    const om = Math.round(-(tzOffset || 0) / 60000);
+    const off = `${om < 0 ? '-' : '+'}${p(Math.floor(Math.abs(om) / 60))}:${p(Math.abs(om) % 60)}`;
+    return `${day}T${time}${off}`;
+  }
 
   // "03/12/2026 Confirmed: ..." -> { date:"2026-03-12", rest:"Confirmed: ..." }
   function splitTitle(title, createdMs) {
@@ -143,6 +155,18 @@
   // regardless of the reader's "strict line breaks" setting.
   const BR = '  ';
 
+  // Emit a YAML scalar, quoting ONLY when the bare value would be mis-parsed —
+  // a leading indicator char, an embedded ": ", or a number/bool/null lookalike.
+  // Plain names (incl. accented/Unicode) stay unquoted.
+  function yaml(s) {
+    const v = String(s);
+    const safe =
+      /^[\p{L}\p{N}][\p{L}\p{N} .'\-]*$/u.test(v) &&
+      !/^(true|false|null|yes|no|on|off|y|n|~)$/i.test(v) &&
+      !/^[+-]?(\d|\.\d)/.test(v);
+    return safe ? v : `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+
   function buildMarkdown(meeting) {
     const t = meeting.transcript || {};
     const tz = t.tzOffset || 0;
@@ -155,27 +179,46 @@
 
     const startMs = t.createdAt || meeting.created;
     const dateStr = startMs ? headerDate(startMs, tz) : '';
-    const participants = (meeting.participants || []).map((p) => p.name).join(', ');
+    // Derive date + start from one wall-clock source so they never disagree;
+    // fall back to the title-parsed date only when there's no start timestamp.
+    const startIso = startMs ? isoStart(startMs, tz) : '';
+    const isoDate = startIso ? startIso.slice(0, 10) : splitTitle(meeting.title, meeting.created).date;
+    const names = (meeting.participants || []).map((p) => p.name).filter(Boolean);
+    const participants = names.join(', ');
     const heading = splitTitle(meeting.title, meeting.created).rest || meeting.title;
+    const sourceUrl = `https://app.tactiq.io/transcripts/${meeting.id}`;
 
     const out = [];
+
+    // YAML frontmatter — the portable, tool-agnostic metadata standard.
+    // qmd indexes this as plain text; Obsidian reads it as properties.
+    out.push('---');
+    out.push(`title: ${yaml(heading)}`);
+    if (isoDate) out.push(`date: ${isoDate}`);
+    if (startIso) out.push(`start: ${startIso}`);
+    out.push(`duration_minutes: ${durMin}`);
+    if (names.length) {
+      out.push('participants:');
+      names.forEach((n) => out.push(`  - ${yaml(n)}`));
+    }
+    out.push(`source: ${sourceUrl}`);
+    out.push('tags: [meeting, transcript]');
+    out.push('---', '');
+
     out.push(`# ${heading}`, '');
 
-    // Meeting-details callout — bulleted so each datum is its own line
-    // (block-level list items don't merge the way soft-wrapped lines do).
-    out.push('> [!info] Meeting details');
-    if (dateStr) out.push(`> - **Date:** ${dateStr}`);
-    out.push(`> - **Duration:** ${durMin} minutes`);
-    if (participants) out.push(`> - **Participants:** ${participants}`);
-    out.push(`> - **Source:** [Open in Tactiq](https://app.tactiq.io/transcripts/${meeting.id})`);
-    out.push('');
+    // Plain metadata line — keeps date/duration/participants searchable as
+    // body prose (qmd queries body text, not frontmatter fields).
+    const metaBits = [dateStr, `${durMin} min`, participants].filter(Boolean);
+    out.push(`**${metaBits.join(' · ')}** · [Open in Tactiq](${sourceUrl})`, '');
 
-    // Highlights callout (pinned blocks), one bullet each
+    // Highlights (pinned blocks) — a real section so qmd can isolate it as a
+    // chunk, instead of an Obsidian-only callout.
     const pinned = blocks.filter((b) => b.isPinned);
     if (pinned.length) {
-      out.push('> [!quote] Highlights');
+      out.push('## Highlights', '');
       pinned.forEach((b) =>
-        out.push(`> - **${b.speakerName}** · ${timeStr(b.timestamp, tz)} — ${(b.transcript || '').trim()}`));
+        out.push(`- **${b.speakerName}** · ${timeStr(b.timestamp, tz)} — ${(b.transcript || '').trim()}`));
       out.push('');
     }
 
